@@ -29,3 +29,9 @@ Plataforma empresarial modular y multi-tenant.
 ## Documentación
 Consultar docs/architecture.md cuando una tarea
 afecte la arquitectura o los límites entre módulos.
+
+## Fases y límites
+- Implementar solo la fase autorizada. Revisar el modelo y los ADR antes de generar migraciones.
+- Consumir contratos de aplicación entre módulos e inyectar adaptadores en la composición.
+- Verificar tenant, membresía, permiso y módulo habilitado en operaciones privadas.
+- Probar aislamiento con PostgreSQL real y el rol de ejecución. Usar Ruff y Pytest.

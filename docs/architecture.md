@@ -24,7 +24,7 @@ Documentos complementarios:
 | --- | --- | --- |
 | Empresa | Un tenant es una empresa; un usuario puede pertenecer a varias | Sin jerarquías entre empresas ni consultas de negocio entre tenants |
 | Usuarios | Personal y clientes autenticados mediante un proveedor OIDC | Proveedor y alta de usuarios por elegir; sin login anónimo ni contraseñas locales |
-| Reservas | Un recurso de capacidad uno por reserva; disponibilidad publicada en intervalos | Sin recurrencias, aforo grupal ni reservas de múltiples recursos |
+| Reservas | Un servicio por reserva, con recursos asignados mediante BOOKING_RESOURCES | Pendiente fijar cuántos recursos exige cada servicio |
 | Catálogo | Productos simples, un precio y una moneda por tenant | Sin variantes, promociones ni marketplace |
 | Venta | Pedido directo, stock en una ubicación lógica y pago externo | Sin carrito persistente, logística, facturación fiscal ni devoluciones automáticas |
 | Reservas y ventas | Comparten contactos; son procesos independientes | Cobrar una reserva mediante un pedido requiere definir reglas antes de añadir esa relación |
@@ -58,10 +58,10 @@ La API confirma operaciones locales en transacciones cortas. Las llamadas lentas
 | Módulo | Responsabilidad y datos propios | Contrato interno publicado |
 | --- | --- | --- |
 | `identity` | Identidad global vinculada a OIDC; perfil del usuario | `ResolvePrincipal`, `GetOwnIdentity` |
-| `tenancy` | Empresas, membresías, roles, orígenes de frontend y estado del tenant | `ResolveTenantContext`, `Authorize`, `ListOwnTenants` |
+| `tenancy` | Empresas, membresías, roles, sitios públicos, orígenes registrados y módulos habilitados | `ResolveTenantContext`, `Authorize`, `ListOwnTenants` |
 | `crm` | Contactos y actividades; vinculación opcional entre contacto y usuario cliente | `GetContact`, `GetOwnContact`, `CreateContact`, `RecordActivity` |
 | `catalog` | Productos, SKU, precio vigente y publicación | `GetProductsForOrder`, `SearchProducts`, `ManageProduct` |
-| `bookings` | Recursos, intervalos de disponibilidad y reservas | `SearchAvailability`, `CreateBooking`, `CancelBooking` |
+| `bookings` | Servicios, recursos, disponibilidad, reservas y asignaciones | `SearchAvailability`, `CreateBooking`, `CancelBooking` |
 | `commerce` | Inventario, pedidos, líneas congeladas, pagos y eventos del proveedor | `CreateOrder`, `CancelOrder`, `StartPayment`, `GetOrder` |
 | `ai` | Agentes, conversaciones, mensajes, ejecuciones y propuestas de herramientas | `StartRun`, `GetRun`, `DecideToolInvocation` |
 
@@ -140,7 +140,7 @@ No se mantiene una transacción ni un bloqueo mientras se espera al proveedor ex
 
 | Flujo | Coordinación |
 | --- | --- |
-| Crear reserva | `bookings` consulta contacto por contrato CRM, bloquea recurso, valida disponibilidad e inserta reserva; PostgreSQL rechaza solapamientos |
+| Crear reserva | `bookings` consulta contacto por contrato CRM, bloquea los recursos por ID, valida todas las ventanas e inserta la reserva y sus asignaciones en una transacción; PostgreSQL rechaza solapamientos |
 | Crear pedido | `commerce` obtiene productos por contrato de catálogo, congela precios, reserva stock y agenda vencimiento en una transacción |
 | Solicitar pago | `commerce` crea intento y job; worker invoca pasarela con idempotencia; webhook verificado confirma el resultado |
 | Ejecutar agente | `ai` registra mensaje/run y job; worker consulta al modelo fuera de transacción; cada herramienta pasa autorización y casos de uso normales |
@@ -172,3 +172,66 @@ Todas las decisiones de los [ADR](adr/README.md) están **propuestas**, no acept
 - Objetivos de disponibilidad, recuperación, retención y carga esperada.
 
 Tras aprobación expresa se podrá planificar el código. El primer entregable de implementación deberá validar aislamiento con PostgreSQL real y los límites de importación antes de añadir los flujos comerciales. Esta propuesta no inicia esa implementación.
+
+## 10. Revisión del modelo y alcance por fase
+
+El repositorio contiene un modelo lógico inicial en [data-model.md](data-model.md). Las fuentes VENUX_ER_v2.mmd, VENUX_modelo_de_datos_v2.md y el DOCX explicativo no estaban disponibles durante esta revisión. Las diferencias siguientes se observaron entre el modelo inicial y los requisitos recibidos. Queda pendiente contrastar entidad por entidad las cardinalidades, claves, nulabilidad e índices de v2. Para planificar la fase 1 prevalece la propuesta siguiente sobre los borradores anteriores.
+
+| Hallazgo | Resolución propuesta o decisión pendiente |
+| --- | --- |
+| El modelo inicial registra orígenes de frontend y omite habilitaciones por empresa | Separar la identidad pública del sitio, el registro de orígenes OIDC y las capacidades de la empresa. Un origen puede servir varios sitios. |
+| BOOKING tiene un único resource_id y carece de service_id | SERVICES 1:N BOOKINGS. BOOKING_RESOURCES vincula reservas y recursos del mismo tenant, con unicidad por pareja. Definir si toda reserva confirmada exige al menos uno. |
+| La exclusión de horarios inicial opera sobre la reserva | En fase 2 aplicar exclusión por tenant, recurso e intervalo ocupado en las asignaciones. Mantener intervalo y estado de ocupación coordinados con la reserva en la misma transacción. Probar dos confirmaciones simultáneas que compitan por uno de varios recursos. |
+| Reservas y pedidos requieren un contacto incluso con el CRM desactivado | Proponer que el contrato interno de contactos mínimos siga disponible para esos casos de uso. La habilitación CRM controla actividades y acceso al CRM. Validar esta distinción con la primera empresa. |
+| Falta la relación opcional servicio–producto | En fase 4 bookings será dueño de SERVICE_PRODUCT_RECOMMENDATIONS con unicidad por tenant, servicio y producto. Validará el producto por contrato de catalog. Esta relación no reserva ni descuenta inventario. |
+| El ER exige pago para todo evento, pero payment_id admite NULL | Un evento pertenece a una cuenta y a cero o un pago. Al conciliar, la FK debe verificar también la cuenta del pago, además del tenant. |
+| Mensajes y ejecuciones se referencian dentro de una conversación | Una FK limitada al tenant permite asociar conversaciones diferentes. Incluir conversation_id en las referencias y claves únicas de destino. |
+
+Las herramientas de IA consumirán los mismos casos de uso y controles de módulo que HTTP. La recuperación documental mediante RAG podrá incorporarse en fase 5 o posterior. Precios, stock y disponibilidad se consultarán al módulo propietario. Automatizaciones queda pendiente de casos de uso concretos.
+
+## 11. Modelo lógico para fundamentos
+
+```mermaid
+erDiagram
+    USERS ||--o{ MEMBERSHIPS : tiene
+    TENANTS ||--|{ MEMBERSHIPS : agrupa
+    TENANTS ||--o{ TENANT_FEATURES : configura
+    TENANTS ||--o{ SITES : publica
+    TENANTS ||--o{ FRONTEND_ORIGINS : registra
+```
+
+| Entidad y propietario | Claves y atributos mínimos | Invariantes |
+| --- | --- | --- |
+| identity.users | id UUID PK, issuer, subject, display_name, email opcional, status | Identidad global única por (issuer, subject). |
+| tenancy.tenants | id UUID PK, slug único, name, timezone, currency, status, version | Alta atómica con primer owner. |
+| tenancy.memberships | id UUID PK, tenant_id FK, user_id FK global, role, status, version | Única por (tenant_id, user_id). Índice (user_id, status) para listar empresas propias. Serializar cambios del último owner activo bloqueando el tenant. |
+| tenancy.tenant_features | id UUID PK, tenant_id FK, feature_key, enabled, version | Única por (tenant_id, feature_key). Clave de catálogo cerrado en código. Ausencia equivale a deshabilitada. |
+| tenancy.sites | id UUID PK, tenant_id FK, public_slug, display_name, status, version | Slug normalizado único global para resolver una ruta sin conocer el tenant. Una empresa admite varios sitios. |
+| tenancy.frontend_origins | id UUID PK, tenant_id FK, origin, oidc_client_id, version | Única por (tenant_id, origin, oidc_client_id). Mantener la lista de CORS separada de la publicación del sitio. |
+
+Todas las filas empresariales llevan tenant_id obligatorio e inmutable, timestamps y UNIQUE (tenant_id, id). Las FK a otras filas empresariales incluyen tenant_id. Los índices únicos anteriores cubren la búsqueda exacta de sitio, habilitación y membresía. Para listar sitios o membresías con cursor usar (tenant_id, created_at, id). El alta y cambio de sitios, orígenes y habilitaciones quedan en control de plataforma auditado. Confirmar el proveedor OIDC, el responsable de ese control y el formato estable del slug antes de la primera migración.
+
+## 12. Contratos y seguridad de fase 1
+
+Bajo /api/v1 se adoptan los contratos de identidad, tenant y membresía de la sección 3 de [rest-api.md](rest-api.md). El alta de empresas crea tenant y owner en una transacción de provisión. Se añaden dos lecturas:
+
+| Ruta | Contexto | Respuesta |
+| --- | --- | --- |
+| GET /api/v1/tenants/{tenant_id}/features | Membresía y tenant activos | 200 con un objeto features que enumera claves conocidas y valores booleanos. |
+| GET /api/v1/public/sites/{public_slug} | Anónimo, slug normalizado validado | 200 con public_slug y display_name. Sitio inexistente, inactivo o empresa suspendida devuelven 404 idéntico. |
+
+En rutas privadas validar firma, issuer, audience y expiración del access token. Resolver (issuer, subject), validar usuario, tenant y membresía activos y construir TenantContext en la transacción. Cada caso de uso comprueba permiso, pertenencia del objeto y módulo habilitado. Token inválido devuelve 401, falta de permiso o módulo deshabilitado 403 y objeto ajeno 404. Los contratos internos aplican la misma autorización al actuar en nombre del usuario.
+
+En la ruta pública, un adaptador de tenancy resuelve un slug exacto mediante una función de lectura restringida que devuelve únicamente la proyección pública de sitios activos con empresa activa. Limitar EXECUTE al rol necesario, fijar search_path y conceder al propietario solo las lecturas requeridas. El contexto público carece de usuario, membresía y permisos de escritura. La aplicación no deriva privilegios del host, Origin, headers o body.
+
+Aplicar filtros explícitos y RLS forzada con USING y WITH CHECK. Usar rol runtime sin propiedad ni BYPASSRLS y contexto local a cada transacción. Los detalles de las políticas privadas y del bootstrap están en [multi-tenancy.md](multi-tenancy.md).
+
+## 13. Secuencia verificable de fase 1
+
+1. Acordar modelo base y cotejar las fuentes v2. Registrar las decisiones aceptadas en los ADR.
+2. Crear el paquete src/venux con composición FastAPI e inyección de dependencias, Python 3.12+, Pydantic v2, Ruff y Pytest. Verificar arranque y límites de importación.
+3. Configurar PostgreSQL, SQLAlchemy 2 asíncrono y Alembic mediante variables de entorno. Levantar API y base con Compose en local y ejecutar migraciones desde una base vacía. Usar la misma imagen en VPS y mantener credenciales y conexiones configurables al migrar de proveedor.
+4. Migrar identidad, tenants y membresías con FK, índices, políticas y roles. Probar alta atómica y revocaciones concurrentes del último owner.
+5. Incorporar OIDC, contexto y contratos privados. Probar token inválido, revocación, rol insuficiente y acceso por ID a un objeto de otra empresa.
+6. Migrar sitios, orígenes y habilitaciones con sus políticas. Probar slugs duplicados, sitio suspendido, módulo ausente y el mismo módulo activo en una empresa e inactivo en otra.
+7. Ejecutar Pytest contra PostgreSQL real con dos tenants y el rol runtime. Cubrir lectura, listado, escritura, FK cruzada y reutilización de una conexión tras commit y rollback. Comprobar que la ruta pública solo devuelve los campos acordados. Registrar resultados antes de pasar a reservas.

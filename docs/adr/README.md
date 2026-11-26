@@ -10,5 +10,6 @@ Todas las decisiones están **propuestas** con fecha 2026-11-17. Documentar una 
 | [0004](0004-transactions-and-postgres-jobs.md) | Unidad de trabajo y jobs durables en PostgreSQL | Propuesto |
 | [0005](0005-delegated-ai-agents.md) | Agentes de IA con permisos delegados y aprobación humana | Propuesto |
 | [0006](0006-compose-deployment-and-scaling.md) | Docker Compose y escalado del mismo monolito | Propuesto |
+| [0007](0007-sites-and-tenant-features.md) | Sitios públicos y habilitación de módulos por empresa | Propuesto |
 
 Punto de entrada y decisiones comerciales pendientes: [arquitectura](../architecture.md).
